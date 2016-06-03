@@ -20,6 +20,7 @@ from . import bti
 from . import cnt
 from . import ctf
 from . import constants
+from . import curry
 from . import edf
 from . import egi
 from . import fiff
@@ -33,6 +34,7 @@ from .brainvision import read_raw_brainvision
 from .bti import read_raw_bti
 from .cnt import read_raw_cnt
 from .ctf import read_raw_ctf
+from .curry import read_raw_curry
 from .edf import read_raw_edf
 from .egi import read_raw_egi
 from .kit import read_raw_kit, read_epochs_kit
