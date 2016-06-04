@@ -612,7 +612,5 @@ class RawCurry(_BaseRaw):
                 # Select the appropriate part of the event channel.
                 data[-1, ci:ei] = stim_ch[ci:ei]
             else:
-                print('\a')
-                print('\n\nBINGO!\n\n')
                 # Copy the raw data into the new data variable.
                 data[:, ci:ei] = raw[sel[:], :] * cals
