@@ -297,7 +297,7 @@ def _get_curry_info(input_fname, eog, ecg, emg, misc, data_format):
     cals = np.ones(len(ch_nrs), dtype=float) * 1e-6
     # The bads list contains all channel names that weren't recording
     # properly.
-    bads = ch_names[status==0]
+    bads = list(ch_names[status==0])
     
     # READ EVENTS FROM CEO
     # Create a few variables to store data and process information in.
@@ -397,8 +397,8 @@ def _get_curry_info(input_fname, eog, ecg, emg, misc, data_format):
     
     # Store a few of the recorded variables in the curry_info variable, for
     # later use within other functions and classes.
-    curry_info.update(n_samples=n_samples, stim_channel=stim_channel,
-        data_format=data_format)
+    curry_info.update(n_samples=n_samples, n_channels=n_channels,
+        stim_channel=stim_channel, data_format=data_format)
     info.update(filename=input_fname, meas_date=np.array([meas_date, 0]),
                 description=str(session_label), buffer_size_sec=10., bads=bads,
                 subject_info=subject_info, chs=chs)
@@ -480,7 +480,7 @@ class RawCurry(_BaseRaw):
         # (These should be produced together with the DAT file, and act as
         # a header to the actual data.)
         info, curry_info = _get_curry_info(input_fname, eog, ecg, emg, misc,
-                               data_format)
+            data_format)
         # Calculate the last sample's index number (Python starts counting at
         # 0, so the Nth sample will have index number N-1).
         last_samps = [curry_info['n_samples'] - 1]
@@ -521,10 +521,9 @@ class RawCurry(_BaseRaw):
             The compensation + projection + cals matrix, if applicable.
         """
         
-        # We need to subtract one from the number of channels, because at
-        # this point one additional channel was added with event triggers.
-        # (This should not be treated as an EEG channel.)
-        n_channels = self.info['nchan'] - 1
+        # We need the number of channels that are encoded in the data file,
+        # and we can get this from the curry_info.
+        n_channels = self._raw_extras[0]['n_channels']
         # The stim_channel is the channel with trigger info. The same number
         # of samples, but with the event number at samples where an event was
         # logged, and 0s otherwise.
@@ -540,8 +539,13 @@ class RawCurry(_BaseRaw):
                 % (__name__, self._raw_extras[0]['data_format']))
 
         # NumPy array that contains the numbers of channels that need to be
-        # read from the data file.
+        # read from the data file, plus the stimulus (=trigger) channel.
         sel = np.arange(n_channels + 1)[idx]
+        # Check if the stimulus channel is in the selection.
+        if n_channels in sel:
+            include_stim_chan = True
+        else:
+            include_stim_chan = False
 
         # Determine the first and the last sample numbers.
         first_sample = start
@@ -549,28 +553,66 @@ class RawCurry(_BaseRaw):
         # Calculate the number of samples to read.
         n_samples = last_sample - first_sample
         
-        # Create an empty, memory-mapped array. We need to do this, to prevent
-        # a memory overflow.
+        # Each sample takes up 4 bytes in float32 encoding. This seems
+        # insignificant, until you realize that with around dozens of channels
+        # and sampling rates that can go up to 1000 Hz, there will be a LOT of
+        # data loaded into memory. On 32-bit systems, the amount of available
+        # RAM is limited. Thus, we need to be careful not to load the entire
+        # file into memory at once. For this reason, we load data in chunks
+        # of 1000 samples each. Note that 1 sample here includes ALL channels!
+        # Calculate the start indices of each set of data.
+        chunk_size = 1000 # in samples!
+        chunk_indices = xrange(0, n_samples, chunk_size)
         
-        # Temporarily open the file.
-        if dtype == 'float':
-            with open(self._filenames[fi], 'rb') as f:            
-                # Go to the sample to start with.
-                f.seek(n_channels*first_sample, os.SEEK_SET)
-                # Read the requested part of the file.
-                raw = np.fromfile(f, dtype=np.float32, count=n_channels*n_samples)
-        elif dtype == 'ascii':
-            raise NotImplementedError( \
-                "ERROR in %s._read_segment_file: Reading data type 'ascii' isn't actually implemented. Sorry about that." \
-                % (__name__))
-        
-        # Reshape the data into separate channels.
-        raw = raw.reshape((n_samples, n_channels))
-        raw = np.transpose(raw)
+        # loop through all chunks of data, loading each as we go along.
+        for ci in chunk_indices:
+            
+            # Calculate the chunk's ending index. (It's the chunk's start
+            # index plus the chunk size)
+            ei = ci + chunk_size
+            # If this is the final chunk index, the ending index is the last
+            # sample in the range.
+            if ei > n_samples:
+                # The ending index is the last sample in the requested range.
+                ei = n_samples
+                # Correct the chunk_size variable to the current chunk's size.
+                chunk_size = ei - ci
+            
+            # Temporarily open the data file.
+            if dtype == 'float':
+                with open(self._filenames[fi], 'rb') as f:
+                    # Calculate what the first sample in this chunk is. It's
+                    # the first sample number in the requested range, plus the
+                    # current chunk's index number.
+                    chunk_start = first_sample + ci
+                    # Go to the first sample in this chunk (the multiplication
+                    # by 4 is because each sample is 4 bytes).
+                    f.seek(4*n_channels*chunk_start, os.SEEK_SET)
+                    # Read the requested part of the file.
+                    raw = np.fromfile(f, dtype=np.float32, \
+                        count=n_channels*chunk_size)
+            elif dtype == 'ascii':
+                raise NotImplementedError( \
+                    "ERROR in %s._read_segment_file: Reading data type 'ascii' isn't actually implemented. Sorry about that." \
+                    % (__name__))
+            
+            # Reshape the data into separate channels.
+            raw = raw.reshape((chunk_size, n_channels))
+            # The raw data is in a (n_samples, n_channels) format, whereas the
+            # data variable is expected to be in a (n_channels, n_samples)
+            # format. Thus, we need to transpose the raw data to fit in the
+            # data variable.
+            raw = np.transpose(raw)
 
-        # Create a new data variable, to store the loaded data in.
-        #data = np.zeros((n_samples, n_channels+1), dtype=float)
-        # Copy the raw data into the new data variable.
-        data[:-1, :] = raw[sel[:-1], :] * cals[sel[:-1],:]
-        # Select the appropriate part of the event channel.
-        data[-1, :] = stim_ch[first_sample:last_sample]
+            # Only include the stimulus channel if it was part of the selected
+            # channels.
+            if include_stim_chan:
+                # Copy the raw data into the new data variable.
+                data[:-1, ci:ei] = raw[sel[:-1], :] * cals[:-1,:]
+                # Select the appropriate part of the event channel.
+                data[-1, ci:ei] = stim_ch[ci:ei]
+            else:
+                print('\a')
+                print('\n\nBINGO!\n\n')
+                # Copy the raw data into the new data variable.
+                data[:, ci:ei] = raw[sel[:], :] * cals
