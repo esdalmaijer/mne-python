@@ -379,8 +379,8 @@ def _get_curry_info(input_fname, eog, ecg, emg, misc, data_format):
     # format.
     #coords = _topo_to_sphere(pos, eegs)
     coords = np.copy(pos)
-    # Invert the y-axis.
-    coords[:,1] *= -1
+    # Invert the x (0) and y (1) axes.
+    coords[:,0:2] *= -1
     locs = np.zeros((len(chs), 12), dtype=float)
     locs[:len(pos), :3] = coords
     for ch, loc in zip(chs, locs):
